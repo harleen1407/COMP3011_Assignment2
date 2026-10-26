@@ -11,6 +11,8 @@
 package comp3011;
 
 import java.io.File;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
@@ -44,6 +46,18 @@ public class VideoPlayerModel {
     private static final long AUDIO_LEAD_NS = 30_000_000L;
 
     private final List<FrameProcessor> frameProcessors;
+    private final ExecutorService playbackExecutor =
+            Executors.newSingleThreadExecutor(r -> {
+                Thread thread = new Thread(r, "video-processing-worker");
+                thread.setDaemon(true);
+                return thread;
+            });
+    private static final int MAX_BUFFERED_FRAMES = 4;
+
+    private final Queue<PreparedFrame> readyFrames =
+            new ArrayDeque<>();
+
+    private boolean workerBusy = false;
     private final Queue<PendingAudio> pendingAudio = new ArrayDeque<>();
     private final BiConsumer<Integer, Integer> videoSizeChangedHandler;
     private final Consumer<Image> frameReadyHandler;
@@ -199,6 +213,7 @@ public class VideoPlayerModel {
 
     public void shutdown() {
         closePlaybackResources();
+        playbackExecutor.shutdownNow();
     }
 
     private void seekRelative(long offsetUs) {
