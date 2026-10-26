@@ -91,6 +91,7 @@ public class VideoPlayerModel {
 
     public VideoPlayerModel(
             boolean audioEnabled,
+            List<Character> requestedEffects,
             BiConsumer<Integer, Integer> videoSizeChangedHandler,
             Consumer<Image> frameReadyHandler,
             Consumer<String> statusChangedHandler,
@@ -113,6 +114,23 @@ public class VideoPlayerModel {
 //        frameProcessors.add(new FrameFlickerer());
 //        frameProcessors.add(new FrameJitterer());
 //        frameProcessors.add(new FrameNumberer());
+
+        for (char effect : requestedEffects) {
+            switch (effect) {
+                case 'n' -> frameProcessors.add(new FrameNumberer());
+                case 's' -> frameProcessors.add(new FrameScratcher());
+                case 'f' -> frameProcessors.add(new FrameFlickerer());
+                case 'w' -> frameProcessors.add(new FrameBlackAndWhiter());
+                case 'y' -> frameProcessors.add(new FrameYellower());
+                case 'v' -> frameProcessors.add(new FrameVignetter());
+                case 'd' -> frameProcessors.add(new FrameDuster());
+                case 'j' -> frameProcessors.add(new FrameJitterer());
+                case 'm' -> frameProcessors.add(new FrameMottler());
+                case 'b' -> frameProcessors.add(new FrameBleeder());
+                case 'p' -> frameProcessors.add(new FramePepperer());
+                default -> throw new IllegalArgumentException("Unknown effect: " + effect);
+            }
+        }
     }
 
     public void play(File file) {

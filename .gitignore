@@ -21,3 +21,6 @@ target/
 # virtual machine crash logs
 hs_err_pid*
 replay_pid*
+
+# Video used for testing
+simpsons.mp4
