@@ -57,25 +57,45 @@ public class VideoPlayerController {
     }
 
     public void installKeyboardShortcuts(Scene scene) {
+
         scene.addEventFilter(KeyEvent.KEY_PRESSED, event -> {
-            if (event.getCode() == KeyCode.ESCAPE) {
-                stopAndExit();
-                event.consume();
-            } else if (event.getCode() == KeyCode.SPACE) {
-                togglePause();
-                event.consume();
-            } else if (event.getCode() == KeyCode.LEFT) {
-                backFiveSeconds();
-                event.consume();
-            } else if (event.getCode() == KeyCode.RIGHT) {
-                forwardFiveSeconds();
-                event.consume();
-            } else if (event.getCode() == KeyCode.HOME) {
-                startOver();
-                event.consume();
-            } else if (event.getCode() == KeyCode.A) {
-                toggleAudioOutput();
-                event.consume();
+
+            switch (event.getCode()) {
+
+                case SPACE -> {
+                    System.out.println("SPACE pressed - toggling pause");
+                    togglePause();
+                    event.consume();
+                }
+
+                case ESCAPE -> {
+                    stopAndExit();
+                    event.consume();
+                }
+
+                case LEFT -> {
+                    backFiveSeconds();
+                    event.consume();
+                }
+
+                case RIGHT -> {
+                    forwardFiveSeconds();
+                    event.consume();
+                }
+
+                case HOME -> {
+                    startOver();
+                    event.consume();
+                }
+
+                case A -> {
+                    toggleAudioOutput();
+                    event.consume();
+                }
+
+                default -> {
+                    // Ignore other keys
+                }
             }
         });
     }

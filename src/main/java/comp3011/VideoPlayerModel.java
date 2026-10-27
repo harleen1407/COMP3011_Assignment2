@@ -13,6 +13,8 @@ package comp3011;
 import java.io.File;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
@@ -34,8 +36,7 @@ import javafx.scene.image.Image;
  *
  * <p>
  * Owns the FFmpeg decoder, playback clock, seeking logic, audio scheduling,
- * and frame processing - which it all manages through cooperative multi-tasking
- * on a single thread. It publishes decoded frames and playback state through
+ * and frame processing on a dedicated background worker thread. It publishes decoded frames and playback state through
  * callbacks supplied by its owning {@link VideoPlayerController}, keeping it
  * decoupled from the JavaFX view.
  * </p>
@@ -46,18 +47,17 @@ public class VideoPlayerModel {
     private static final long AUDIO_LEAD_NS = 30_000_000L;
 
     private final List<FrameProcessor> frameProcessors;
-    private final ExecutorService playbackExecutor =
-            Executors.newSingleThreadExecutor(r -> {
-                Thread thread = new Thread(r, "video-processing-worker");
-                thread.setDaemon(true);
-                return thread;
-            });
-    private static final int MAX_BUFFERED_FRAMES = 4;
+    // Only this worker accesses FFmpeg, the effect processors, and audio resources.
+    private final ExecutorService playbackExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "video-processing-worker");
+        thread.setDaemon(true);
+        return thread;
+    });
+    // Never enqueue more than one timer pulse while decoding is busy.
+    private final AtomicBoolean pumpScheduled = new AtomicBoolean(false);
+    private final AtomicBoolean shuttingDown = new AtomicBoolean(false);
+    private volatile boolean audioEnabledForView;
 
-    private final Queue<PreparedFrame> readyFrames =
-            new ArrayDeque<>();
-
-    private boolean workerBusy = false;
     private final Queue<PendingAudio> pendingAudio = new ArrayDeque<>();
     private final BiConsumer<Integer, Integer> videoSizeChangedHandler;
     private final Consumer<Image> frameReadyHandler;
@@ -76,7 +76,16 @@ public class VideoPlayerModel {
     private final AnimationTimer playbackTimer = new AnimationTimer() {
         @Override
         public void handle(long now) {
-            pumpPlayback(now);
+            if (shuttingDown.get()) return;
+            if (pumpScheduled.compareAndSet(false, true)) {
+                submitPlaybackTask(() -> {
+                    try {
+                        pumpPlayback(System.nanoTime());
+                    } finally {
+                        pumpScheduled.set(false);
+                    }
+                });
+            }
         }
     };
 
@@ -85,7 +94,6 @@ public class VideoPlayerModel {
     private JavaFXFrameConverter converter; // Takes Frame objects to JavaFX Image objects, which can be put on screen.
     private AudioPlayer audioPlayer; // This is ours. It has some real time buffering smarts.
     private PreparedFrame preparedFrame; // Ours, but is just an Image with some meta-data added.
-    private boolean prepareNextFrameQueued; // True only when the event loop needs to call our prepareNextFrame method.
     private boolean playbackOpen; // True when playback is happening.
     private boolean pauseRequested;
     private boolean audioOutputEnabled;
@@ -112,6 +120,7 @@ public class VideoPlayerModel {
             BiConsumer<Boolean, Boolean> playbackStateChangedHandler,
             Consumer<Boolean> audioOutputStateChangedHandler) {
         audioOutputEnabled = audioEnabled;
+        audioEnabledForView = audioEnabled;
         this.videoSizeChangedHandler = videoSizeChangedHandler;
         this.frameReadyHandler = frameReadyHandler;
         this.statusChangedHandler = statusChangedHandler;
@@ -128,7 +137,6 @@ public class VideoPlayerModel {
 //        frameProcessors.add(new FrameFlickerer());
 //        frameProcessors.add(new FrameJitterer());
 //        frameProcessors.add(new FrameNumberer());
-
         for (char effect : requestedEffects) {
             switch (effect) {
                 case 'n' -> frameProcessors.add(new FrameNumberer());
@@ -148,6 +156,10 @@ public class VideoPlayerModel {
     }
 
     public void play(File file) {
+        submitPlaybackTask(() -> playOnWorker(file));
+    }
+
+    private void playOnWorker(File file) {
         videoFile = file;
         videoDurationUs = NO_SEEK_REQUEST;
         videoFrameDurationUs = 0;
@@ -155,6 +167,10 @@ public class VideoPlayerModel {
     }
 
     public void startOver() {
+        submitPlaybackTask(() -> startOverOnWorker());
+    }
+
+    private void startOverOnWorker() {
         if (videoFile == null) {
             return;
         }
@@ -163,14 +179,26 @@ public class VideoPlayerModel {
     }
 
     public void backFiveSeconds() {
+        submitPlaybackTask(() -> backFiveSecondsOnWorker());
+    }
+
+    private void backFiveSecondsOnWorker() {
         seekRelative(-FIVE_SECONDS_US);
     }
 
     public void forwardFiveSeconds() {
+        submitPlaybackTask(() -> forwardFiveSecondsOnWorker());
+    }
+
+    private void forwardFiveSecondsOnWorker() {
         seekRelative(FIVE_SECONDS_US);
     }
 
     public void togglePause() {
+        submitPlaybackTask(() -> togglePauseOnWorker());
+    }
+
+    private void togglePauseOnWorker() {
         if (!playbackOpen) {
             if (videoFile != null) {
                 startPlayback(displayableSeekTimestamp(currentTimestampUs), false, currentTimestampUs);
@@ -192,17 +220,26 @@ public class VideoPlayerModel {
     }
 
     public void toggleAudioOutput() {
+        submitPlaybackTask(() -> toggleAudioOutputOnWorker());
+    }
+
+    private void toggleAudioOutputOnWorker() {
         audioOutputEnabled = !audioOutputEnabled;
+        audioEnabledForView = audioOutputEnabled;
         pendingAudio.clear();
         flushAudioOutput();
         notifyAudioOutputStateChanged();
     }
 
     public boolean isAudioOutputEnabled() {
-        return audioOutputEnabled;
+        return audioEnabledForView;
     }
 
     public void stopPlayback() {
+        submitPlaybackTask(() -> stopPlaybackOnWorker());
+    }
+
+    private void stopPlaybackOnWorker() {
         closePlaybackResources();
         currentTimestampUs = 0;
         pauseRequested = false;
@@ -211,9 +248,26 @@ public class VideoPlayerModel {
         notifyPlaybackStateChanged();
     }
 
+    // Accept commands only while the worker is running. Closing the window can
+    // otherwise race with the JavaFX animation timer and reject new tasks.
+    private void submitPlaybackTask(Runnable task) {
+        if (shuttingDown.get()) return;
+        try {
+            playbackExecutor.execute(task);
+        } catch (RejectedExecutionException ignored) {
+            // The application is already closing; no more work should be queued.
+        }
+    }
+
     public void shutdown() {
-        closePlaybackResources();
-        playbackExecutor.shutdownNow();
+        if (!shuttingDown.compareAndSet(false, true)) return;
+        playbackTimer.stop(); // Must run on JavaFX thread, before executor shutdown.
+        try {
+            playbackExecutor.execute(this::closePlaybackResources);
+        } catch (RejectedExecutionException ignored) {
+            // Already stopped.
+        }
+        playbackExecutor.shutdown();
     }
 
     private void seekRelative(long offsetUs) {
@@ -262,7 +316,7 @@ public class VideoPlayerModel {
             openPlaybackResources(startTimestampUs);
             resetPlaybackClock(currentTimestampUs);
             playbackOpen = true;
-            playbackTimer.start();
+            Platform.runLater(playbackTimer::start);
             prepareNextFrame();
             notifyPlaybackStateChanged();
         } catch (Exception e) {
@@ -409,7 +463,7 @@ public class VideoPlayerModel {
         writeDueAudio(now);
 
         // Task (2)
-        if (preparedFrame != null && preparedFrame.targetTimeNs() <= now) {
+        if (!pauseRequested && preparedFrame != null && preparedFrame.targetTimeNs() <= now) {
             // We have a prepared frame ready to go and it is due (or just past due!) so get it up on screen ASAP!
             displayPreparedFrame(now);
         }
@@ -419,15 +473,8 @@ public class VideoPlayerModel {
         // to replace this whole block with simple linear control flow logic
         // such as: if (!pauseRequested && preparedFrame == null) prepareNextFrame();
         // to compare.
-        if (!pauseRequested && preparedFrame == null && !prepareNextFrameQueued) {
-            prepareNextFrameQueued = true;
-            Platform.runLater(() -> {
-                prepareNextFrameQueued = false;
-
-                if (!pauseRequested) {
-                    prepareNextFrame();
-                }
-            });
+        if (!pauseRequested && preparedFrame == null) {
+            prepareNextFrame();
         }
     }
 
@@ -518,7 +565,7 @@ public class VideoPlayerModel {
     }
 
     private void closePlaybackResources() {
-        playbackTimer.stop();
+        Platform.runLater(playbackTimer::stop);
         playbackOpen = false;
         preparedFrame = null;
         pendingAudio.clear();
@@ -611,23 +658,26 @@ public class VideoPlayerModel {
     }
 
     private void notifyVideoSizeChanged(int width, int height) {
-        videoSizeChangedHandler.accept(width, height);
+        Platform.runLater(() -> videoSizeChangedHandler.accept(width, height));
     }
 
     private void notifyFrameReady(Image image) {
-        frameReadyHandler.accept(image);
+        Platform.runLater(() -> frameReadyHandler.accept(image));
     }
 
     private void notifyStatusChanged(String status) {
-        statusChangedHandler.accept(status);
+        Platform.runLater(() -> statusChangedHandler.accept(status));
     }
 
     private void notifyPlaybackStateChanged() {
-        playbackStateChangedHandler.accept(playbackOpen, pauseRequested);
+        boolean playing = playbackOpen;
+        boolean paused = pauseRequested;
+        Platform.runLater(() -> playbackStateChangedHandler.accept(playing, paused));
     }
 
     private void notifyAudioOutputStateChanged() {
-        audioOutputStateChangedHandler.accept(audioOutputEnabled);
+        boolean enabled = audioOutputEnabled;
+        Platform.runLater(() -> audioOutputStateChangedHandler.accept(enabled));
     }
 
     private record PreparedFrame(
