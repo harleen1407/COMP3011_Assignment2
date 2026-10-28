@@ -73,6 +73,16 @@ public class FrameScratcher extends FrameProcessor {
         double frameEnd = frameStart + 1.0;
 
         for (Scratch scratch : scratches) {
+        	// Scratches are generated in chronological start-frame order.
+            // No later scratch can overlap this frame.
+            if (scratch.startFrame() >= frameEnd) {
+                break;
+            }
+
+            // Ignore scratches that have already ended.
+            if (scratch.endFrame() <= frameStart) {
+                continue;
+            }
             double scratchStart = Math.max(scratch.startFrame(), frameStart);
             double scratchEnd = Math.min(scratch.endFrame(), frameEnd);
 
@@ -84,6 +94,17 @@ public class FrameScratcher extends FrameProcessor {
             }
         }
     }
+
+
+	/**
+	 * Generates a reproducible collection of film scratches using the
+	 * media-specific random seed.
+	 *
+	 * Scratch positions, durations and thicknesses are calculated once
+	 * during initialisation rather than regenerated for every frame.
+	 *
+	 * This ensures consistent visual output during playback and seeking.
+	 */
 
     private void generateScratches() {
         scratches.clear();

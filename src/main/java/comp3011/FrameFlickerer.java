@@ -44,51 +44,86 @@ public class FrameFlickerer extends FrameProcessor {
         mediaSeed = saltedMediaSeed(videoInfo.mediaName(), instanceIndex);
     }
 
-    @Override
-    public void process(Frame frame, InfoFrame info) throws Exception {
-        if (frame.image == null || frame.image.length == 0 || frame.image[0] == null) {
-            return;
-        }
 
-        if (!(frame.image[0] instanceof ByteBuffer pixels)) {
-            throw new Exception("FrameFlickerer requires byte-backed image frames");
-        }
+	/**
+	 * Checks that the supplied frame uses a supported pixel format.
+	 *
+	 * @param frame the frame to validate
+	 * @throws Exception if the frame format is unsupported
+	 */
+	private void validateFrame(Frame frame) throws Exception {
+	    if (videoInfo.imageDepth() != Frame.DEPTH_UBYTE
+	            && videoInfo.imageDepth() != Frame.DEPTH_BYTE) {
+	        throw new Exception("FrameFlickerer requires 8-bit image frames");
+	    }
+	
+	    if (videoInfo.imageChannels() < 1) {
+	        throw new Exception("FrameFlickerer requires at least one image channel");
+	    }
+	
+	    if (!(frame.image[0] instanceof ByteBuffer)) {
+	        throw new Exception("FrameFlickerer requires byte-backed image frames");
+	    }
+	}
 
-        if (videoInfo.imageDepth() != Frame.DEPTH_UBYTE && videoInfo.imageDepth() != Frame.DEPTH_BYTE) {
-            throw new Exception("FrameFlickerer requires 8-bit image frames");
-        }
 
-        if (videoInfo.imageChannels() < 1) {
-            throw new Exception("FrameFlickerer requires at least one image channel");
-        }
+	@Override
+	public void process(Frame frame, InfoFrame info) throws Exception {
+	    if (frame.image == null
+	            || frame.image.length == 0
+	            || frame.image[0] == null) {
+	        return;
+	    }
+	
+	    validateFrame(frame);
+	
+	    ByteBuffer pixels = (ByteBuffer) frame.image[0];
+	
+	    Random random = new Random(
+	            (long) mediaSeed + info.frameNumber());
+	
+	    double dimmingPercentage =
+	            Math.abs(random.nextGaussian()) * FLICKER_PERCENTAGE_SD;
+	
+	    double brightnessScale =
+	            Math.max(0.0, 100.0 - dimmingPercentage) / 100.0;
+	
+	    dimFrame(pixels, brightnessScale);
+	}
 
-        Random random = new Random((long) mediaSeed + info.frameNumber());
-        double dimmingPercentage = Math.abs(random.nextGaussian()) * FLICKER_PERCENTAGE_SD;
-        double brightnessScale = Math.max(0.0, 100.0 - dimmingPercentage) / 100.0;
 
-        dimFrame(pixels, brightnessScale);
-    }
 
-    private void dimFrame(ByteBuffer pixels, double brightnessScale) {
-        byte[] dimLookup = new byte[256];
-        for (int value = 0; value < dimLookup.length; value++) {
-            dimLookup[value] = (byte) clamp((int) Math.round(value * brightnessScale), 0, 255);
-        }
-
-        int height = videoInfo.imageHeight();
-        int widthBytes = videoInfo.imageWidth() * videoInfo.imageChannels();
-        int stride = videoInfo.imageStride();
-
-        for (int y = 0; y < height; y++) {
-            int rowStart = y * stride;
-            for (int offset = 0; offset < widthBytes; offset++) {
-                int index = rowStart + offset;
-                pixels.put(index, dimLookup[Byte.toUnsignedInt(pixels.get(index))]);
-            }
-        }
-    }
-
-    private int clamp(int value, int min, int max) {
-        return Math.max(min, Math.min(value, max));
-    }
+	/**
+	 * Applies a deterministic brightness adjustment to every visible
+	 * pixel in the frame.
+	 *
+	 * Uses a lookup table to avoid repeated floating-point calculations
+	 * for individual pixels.
+	 *
+	 * @param pixels the frame's writable pixel buffer
+	 * @param brightnessScale brightness multiplier between 0.0 and 1.0
+	 */
+	private void dimFrame(ByteBuffer pixels, double brightnessScale) {
+	    final byte[] brightnessLookup = new byte[256];
+	
+	    for (int value = 0; value < brightnessLookup.length; value++) {
+	        brightnessLookup[value] =
+	                (byte) Math.round(value * brightnessScale);
+	    }
+	
+	    final int height = videoInfo.imageHeight();
+	    final int widthBytes =
+	            videoInfo.imageWidth() * videoInfo.imageChannels();
+	    final int stride = videoInfo.imageStride();
+	
+	    for (int y = 0; y < height; y++) {
+	        final int rowStart = y * stride;
+	        final int rowEnd = rowStart + widthBytes;
+	
+	        for (int index = rowStart; index < rowEnd; index++) {
+	            final int originalValue = pixels.get(index) & 0xFF;
+	            pixels.put(index, brightnessLookup[originalValue]);
+	        }
+	    }
+	}
 }

@@ -53,6 +53,19 @@ public abstract class FrameProcessor {
         crc.update(bytes, 0, bytes.length);
         return (int) crc.getValue();
     }
-
+    
+    /**
+     * Applies this processor's effect to the supplied frame.
+     *
+     * The frame is modified in place. Processors must be executed
+     * in the configured effect order to preserve the expected result.
+     *
+     * Implementations should produce deterministic output for the
+     * same media and frame number.
+     *
+     * @param frame the video frame to modify
+     * @param info metadata identifying the current frame
+     * @throws Exception if the frame format is unsupported or processing fails
+     */
     public abstract void process(Frame frame, InfoFrame info) throws Exception;
 }

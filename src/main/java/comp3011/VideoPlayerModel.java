@@ -4,7 +4,7 @@
  * 
  * Authors:
  *   1. Simon Ratcliffe, in collaboration with GPT-5.6 Terra
- *   2. <student name and student number insert here upon modification>
+ *   2. Harleen Kaur Dhillon - a2908973
  *
  * Copyright 2026 Simon Ratcliffe
  */
@@ -631,7 +631,17 @@ public class VideoPlayerModel {
 
         return Math.max(0, durationUs - frameDurationUs);
     }
-
+    /**
+    * Applies all requested video effects to the current frame.
+    *
+    * Effect order is significant because each processor modifies
+    * the same frame buffer. Changing this order may alter the final
+    * image and cause visual verification tests to fail.
+    *
+    * @param frame decoded video frame
+    * @param info frame number and timing metadata
+    * @throws Exception if any processor fails
+    */
     private void processFrame(Frame frame, InfoFrame info) throws Exception {
         for (FrameProcessor processor : frameProcessors) {
             processor.process(frame, info);
